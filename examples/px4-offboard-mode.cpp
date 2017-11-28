@@ -97,6 +97,7 @@ static uint8_t have_basic_info_mask = 0;
 enum actions {
     ARM_DISARM = 0,
     SET_MODE,
+    SET_HOME,
     MOVE_X,
     MOVE_Y,
     MOVE_Z,
@@ -114,18 +115,15 @@ struct tasks {
 
 static struct tasks list[] = {
     { .action = CHECK_STATE },
+    { .action = SET_HOME },
     { .action = SET_MODE },
     { .action = ARM_DISARM, .param1 = 1 },
     // Z is inverted in NED https://dev.px4.io/en/ros/external_position_estimation.html#asserting-on-reference-frames
-    { .action = MOVE_Z, .param1 = -5 },
+    { .action = MOVE_Z, .param1 = -2 },
     { .action = WAIT_MOVE },
-    { .action = MOVE_X, .param1 = 5 },
+    { .action = MOVE_Y, .param1 = -3 },
     { .action = WAIT_MOVE },
-    { .action = MOVE_Y, .param1 = 5 },
-    { .action = WAIT_MOVE },
-    { .action = MOVE_X, .param1 = -5 },
-    { .action = WAIT_MOVE },
-    { .action = MOVE_Y, .param1 = -5 },
+    { .action = MOVE_Y, .param1 = 3 },
     { .action = WAIT_MOVE },
     { .action = LAND },
     { .action = WAIT_LAND },
@@ -356,6 +354,9 @@ static void next_action_print(struct tasks *t)
     case SET_MODE:
         printf("Requesting mode %s...\n", mode_names[PX4_MODE_OFFBOARD]);
         break;
+    case SET_HOME:
+        printf("Setting home...\n");
+        break;
     case MOVE_X:
         printf("Moving %i meters in X....\n", t->param1);
         break;
@@ -418,9 +419,10 @@ static void timeout_callback()
                     if (!(have_basic_info_mask & BASIC_INFO_EXTENDED_SYS_STATE_BIT)) {
                         printf("\t- basic extended info\n");
                     }
-                    if (!(have_basic_info_mask & BASIC_INFO_HOME_POSITION)) {
+					// Using ILT instead of GPS
+                    /*if (!(have_basic_info_mask & BASIC_INFO_HOME_POSITION)) {
                         printf("\t- home position(GPS fix)\n");
-                    }
+                    }*/
                     count = 0;
                 } else {
                     count++;
@@ -434,6 +436,15 @@ static void timeout_callback()
         }
 
         set_mode_send(PX4_MODE_OFFBOARD);
+        break;
+    case SET_HOME:
+        x = vehicle_x;
+        y = vehicle_y;
+        z = vehicle_z;
+
+        printf("vehicle_x: %f, y: %f, z: %f \n", vehicle_x, vehicle_y, vehicle_z);
+
+        task_list_index++;
         break;
     case ARM_DISARM: {
         if (armed == t->param1) {
