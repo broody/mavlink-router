@@ -47,6 +47,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#include <cmath>
 
 #include <mavlink.h>
 
@@ -55,12 +56,19 @@
 #define SYSTEM_ID 11
 #define TARGET_SYSTEM_ID 1
 
+#define PX4_MANUAL_MODE 0
 #define PX4_MAIN_MODE_CUSTOM 1
 #define PX4_CUSTOM_MODE_OFFBOARD 6
 
 #define POLL_ERROR_EVENTS (POLLERR | POLLHUP | POLLNVAL)
 
-#define SETPOINT_RANGE 0.25f
+#define SETPOINT_RANGE 0.10f
+#define SETPOS_INTERVAL_MS 50
+#define POS_HOLD_DURATION_MS 1000
+
+#define HEADING_90_DEG (M_PI / 180) * 90
+#define HEADING_180_DEG (M_PI / 180) * 180
+#define HEADING_270_DEG (M_PI / 180) * 270
 
 static volatile bool g_should_exit;
 
@@ -77,7 +85,7 @@ enum px4_modes {
 
 static const char * mode_names[] = {
     "unknown",
-    "offboard"
+    "offboard",
 };
 
 static enum px4_modes current_mode = PX4_MODE_UNKNOWN;
@@ -89,19 +97,22 @@ static float vehicle_x, vehicle_y, vehicle_z;
 #define BASIC_INFO_HEARTBEAT_BIT (1 << 0)
 #define BASIC_INFO_LOCAL_POSITION_NED_BIT (1 << 1)
 #define BASIC_INFO_EXTENDED_SYS_STATE_BIT (1 << 2)
-#define BASIC_INFO_HOME_POSITION (1 << 3)
-#define BASIC_INFO_ALL_BITS (BASIC_INFO_HEARTBEAT_BIT | BASIC_INFO_LOCAL_POSITION_NED_BIT | BASIC_INFO_EXTENDED_SYS_STATE_BIT )
+#define BASIC_INFO_MOCAP_BIT (1 << 3)
+#define BASIC_INFO_ALL_BITS (BASIC_INFO_HEARTBEAT_BIT | BASIC_INFO_LOCAL_POSITION_NED_BIT | BASIC_INFO_EXTENDED_SYS_STATE_BIT | BASIC_INFO_MOCAP_BIT)
 
 static uint8_t have_basic_info_mask = 0;
 
 enum actions {
-    ARM_DISARM = 0,
+    ARM = 0,
+    DISARM,
     SET_MODE,
     SET_HOME,
-    MOVE_X,
-    MOVE_Y,
-    MOVE_Z,
-    WAIT_MOVE,
+    MOVE_OFFSET_X,
+    MOVE_OFFSET_Y,
+    MOVE_OFFSET_Z,
+    MOVE_ABS_XYZ,       // param1 = x, param2 = y, param3 = z
+    HOLD_POS,           // param1 = how long to hold for in ms
+    WAIT_MOVE,         
     LAND,
     WAIT_LAND,
     CHECK_STATE,
@@ -110,24 +121,33 @@ enum actions {
 
 struct tasks {
     enum actions action;
-    int32_t param1;
+    float param1;
+    float param2;
+    float param3;
+    float param4;
 };
 
 static struct tasks list[] = {
     { .action = CHECK_STATE },
     { .action = SET_HOME },
     { .action = SET_MODE },
-    { .action = ARM_DISARM, .param1 = 1 },
+    { .action = ARM},
     // Z is inverted in NED https://dev.px4.io/en/ros/external_position_estimation.html#asserting-on-reference-frames
-    { .action = MOVE_Z, .param1 = -2 },
+    { .action = MOVE_OFFSET_Z, .param1 = -1, .param2 = HEADING_270_DEG },
     { .action = WAIT_MOVE },
-    { .action = MOVE_Y, .param1 = -3 },
+    { .action = HOLD_POS, .param1 = POS_HOLD_DURATION_MS },
+/*    { .action = MOVE_OFFSET_Y, .param1 = -4 },
     { .action = WAIT_MOVE },
-    { .action = MOVE_Y, .param1 = 3 },
+    { .action = HOLD_POS, .param1 = POS_HOLD_DURATION_MS },
+    { .action = MOVE_OFFSET_Z, .param1 = -1 },
     { .action = WAIT_MOVE },
+    { .action = HOLD_POS, .param1 = POS_HOLD_DURATION_MS },
+    { .action = MOVE_OFFSET_Y, .param1 = 4 },
+    { .action = WAIT_MOVE },
+    { .action = HOLD_POS, .param1 = POS_HOLD_DURATION_MS },*/
     { .action = LAND },
     { .action = WAIT_LAND },
-    { .action = ARM_DISARM, .param1 = 0 },
+    { .action = DISARM },
     { .action = END }
 };
 
@@ -185,6 +205,13 @@ static void handle_command_ack(mavlink_command_ack_t *ack)
 
 static void handle_heartbeat(mavlink_heartbeat_t *heartbeat)
 {
+    // Manual override and quit 
+    if(in_the_air && (heartbeat->base_mode & MAV_MODE_FLAG_MANUAL_INPUT_ENABLED)) {
+        printf("Manual override, exiting...\n");
+        g_should_exit = true;
+        return;
+    }
+
     if (heartbeat->base_mode & MAV_MODE_FLAG_SAFETY_ARMED) {
         if (!armed) {
             printf("Status: Vehicle armed\n");
@@ -206,7 +233,7 @@ static void handle_heartbeat(mavlink_heartbeat_t *heartbeat)
         }
 
         if (mode != current_mode) {
-            printf("Status: Current mode %s\n", mode_names[mode]);
+            printf("Status: Current mode %s \n", mode_names[mode]);
         }
 
         current_mode = mode;
@@ -236,16 +263,6 @@ static void handle_extended_sys_state(mavlink_extended_sys_state_t *extended_sys
         }
         landing = true;
         break;
-    }
-}
-
-static void handle_home_position(mavlink_home_position_t *home)
-{
-    static bool first = true;
-
-    if (first) {
-        printf("Status: Got home position\n");
-        first = false;
     }
 }
 
@@ -283,18 +300,32 @@ static void handle_new_message(const mavlink_message_t *msg)
         handle_extended_sys_state(&extended_sys_state);
         have_basic_info_mask |= BASIC_INFO_EXTENDED_SYS_STATE_BIT;
         break;
-    case MAVLINK_MSG_ID_HOME_POSITION:
-        mavlink_home_position_t home;
-        mavlink_msg_home_position_decode(msg, &home);
-        handle_home_position(&home);
-        have_basic_info_mask |= BASIC_INFO_HOME_POSITION;
+    case MAVLINK_MSG_ID_ATT_POS_MOCAP:
+        static int8_t count = 0;
+        if(count < 5) 
+            count++;
+        else
+            have_basic_info_mask |= BASIC_INFO_MOCAP_BIT;
         break;
     default:
         break;
     }
 }
 
-static void position_set_send(float x, float y, float z, float yaw)
+static void arm_disarm_send(int arm) {
+    mavlink_message_t msg;
+    mavlink_command_long_t cmd = {};
+
+    cmd.command = MAV_CMD_COMPONENT_ARM_DISARM;
+    cmd.target_system = TARGET_SYSTEM_ID;
+    cmd.target_component = MAV_COMP_ID_ALL;
+    cmd.param1 = arm;
+
+    mavlink_msg_command_long_encode(SYSTEM_ID, MAV_COMP_ID_ALL, &msg, &cmd);
+    msg_send(&msg);
+}
+
+static void position_set_send(float x, float y, float z, float yaw, bool offset)
 {
     mavlink_message_t msg;
     mavlink_set_position_target_local_ned_t set_position = {};
@@ -310,7 +341,7 @@ static void position_set_send(float x, float y, float z, float yaw)
 
     set_position.target_system = TARGET_SYSTEM_ID;
     set_position.target_component = MAV_COMP_ID_ALL;
-    set_position.coordinate_frame = MAV_FRAME_LOCAL_OFFSET_NED;
+    set_position.coordinate_frame = (offset ? MAV_FRAME_LOCAL_OFFSET_NED : MAV_FRAME_LOCAL_NED);
     /* only make X, Y, Z and yaw valid */
     set_position.type_mask = ~(1 << 0 | 1 << 1 | 1 << 2 | 1 << 10);
     set_position.x = x;
@@ -348,8 +379,11 @@ static void set_mode_send(enum px4_modes mode)
 static void next_action_print(struct tasks *t)
 {
     switch (t->action) {
-    case ARM_DISARM:
-        printf("Requesting %s...\n", t->param1 ? "arm" : "disarm");
+    case ARM:
+        printf("Requesting ARM...\n");
+        break;
+    case DISARM:
+        printf("Requesting DISARM...\n");
         break;
     case SET_MODE:
         printf("Requesting mode %s...\n", mode_names[PX4_MODE_OFFBOARD]);
@@ -357,14 +391,20 @@ static void next_action_print(struct tasks *t)
     case SET_HOME:
         printf("Setting home...\n");
         break;
-    case MOVE_X:
-        printf("Moving %i meters in X....\n", t->param1);
+    case MOVE_OFFSET_X:
+        printf("Moving %f meters in X....\n", t->param1);
         break;
-    case MOVE_Y:
-        printf("Moving %i meters in Y....\n", t->param1);
+    case MOVE_OFFSET_Y:
+        printf("Moving %f meters in Y....\n", t->param1);
         break;
-    case MOVE_Z:
-        printf("Moving %i meters in Z....\n", t->param1);
+    case MOVE_OFFSET_Z:
+        printf("Moving %f meters in Z....\n", t->param1);
+        break;
+    case MOVE_ABS_XYZ:
+        printf("Moving to (%f, %f, %f)...\n", t->param1, t->param2, t->param3);
+        break;
+    case HOLD_POS:
+        printf("Holding position at current location for %d ms\n", (int32_t) t->param1);
         break;
     case WAIT_MOVE:
         break;
@@ -385,6 +425,7 @@ static void next_action_print(struct tasks *t)
 static void timeout_callback()
 {
     static float x = 0, y = 0, z = 0, yaw = 0;
+    bool offset = true;
     struct tasks *t;
 
     if (task_list_index >= (sizeof(list) / sizeof(struct tasks))) {
@@ -419,10 +460,9 @@ static void timeout_callback()
                     if (!(have_basic_info_mask & BASIC_INFO_EXTENDED_SYS_STATE_BIT)) {
                         printf("\t- basic extended info\n");
                     }
-					// Using ILT instead of GPS
-                    /*if (!(have_basic_info_mask & BASIC_INFO_HOME_POSITION)) {
-                        printf("\t- home position(GPS fix)\n");
-                    }*/
+                    if (!(have_basic_info_mask & BASIC_INFO_MOCAP_BIT)) {
+                        printf("\t- MOCAP data\n");
+                    }
                     count = 0;
                 } else {
                     count++;
@@ -446,22 +486,20 @@ static void timeout_callback()
 
         task_list_index++;
         break;
-    case ARM_DISARM: {
-        if (armed == t->param1) {
+    case ARM: {
+        if (armed) {
             task_list_index++;
             break;
         }
-
-        mavlink_message_t msg;
-        mavlink_command_long_t cmd = {};
-
-        cmd.command = MAV_CMD_COMPONENT_ARM_DISARM;
-        cmd.target_system = TARGET_SYSTEM_ID;
-        cmd.target_component = MAV_COMP_ID_ALL;
-        cmd.param1 = t->param1;
-
-        mavlink_msg_command_long_encode(SYSTEM_ID, MAV_COMP_ID_ALL, &msg, &cmd);
-        msg_send(&msg);
+        arm_disarm_send(1);
+        break;
+    }
+    case DISARM: {
+        if (!armed) {
+            task_list_index++;
+            break;
+        }
+        arm_disarm_send(0);
         break;
     }
     case LAND: {
@@ -492,28 +530,49 @@ static void timeout_callback()
         if (!in_the_air) {
             task_list_index++;
         }
-
         break;
     }
-    case MOVE_Z: {
+    case MOVE_OFFSET_Z: {
         z += t->param1;
+        if(t->param2 != NAN) yaw += t->param2;
         task_list_index++;
         break;
     }
-    case MOVE_X: {
+    case MOVE_OFFSET_X: {
         x += t->param1;
+        if(t->param2 != NAN) yaw += t->param2;
         task_list_index++;
         break;
     }
-    case MOVE_Y: {
+    case MOVE_OFFSET_Y: {
         y += t->param1;
+        if(t->param2 != NAN) yaw += t->param2;
+        task_list_index++;
+        break;
+    }
+    case HOLD_POS: {
+        static int32_t timeout_cb_count = 0;
+        int32_t elapsed_time_ms = timeout_cb_count++ * SETPOS_INTERVAL_MS;
+        if(elapsed_time_ms >= (int32_t) t->param1) {
+            timeout_cb_count = 0;
+            task_list_index++;
+        }
+        break;
+    }
+    case MOVE_ABS_XYZ: {
+        x = t->param1;
+        y = t->param2;
+        z = t->param3;
+        if(t->param4 != NAN) yaw = t->param4;
+
+        offset = false;
         task_list_index++;
         break;
     }
     case WAIT_MOVE: {
-        if (abs(vehicle_z - z) < SETPOINT_RANGE
-            && abs(vehicle_y - y) < SETPOINT_RANGE
-            && abs(vehicle_x - x) < SETPOINT_RANGE) {
+        if (std::abs(vehicle_z - z) < SETPOINT_RANGE
+            && std::abs(vehicle_y - y) < SETPOINT_RANGE
+            && std::abs(vehicle_x - x) < SETPOINT_RANGE) {
             task_list_index++;
             printf("Target reached\n");
         }
@@ -525,7 +584,7 @@ static void timeout_callback()
         break;
     };
 
-    position_set_send(x, y, z, yaw);
+    position_set_send(x, y, z, yaw, offset);
 
     // print next action
     if (t != &list[task_list_index]) {
@@ -649,7 +708,7 @@ static int setup_timeout()
     }
 
     ts.it_interval.tv_sec = 0;
-    ts.it_interval.tv_nsec = NSEC_PER_MSEC * 50;
+    ts.it_interval.tv_nsec = NSEC_PER_MSEC * SETPOS_INTERVAL_MS;
     ts.it_value.tv_sec = ts.it_interval.tv_sec;
     ts.it_value.tv_nsec = ts.it_interval.tv_nsec;
 
