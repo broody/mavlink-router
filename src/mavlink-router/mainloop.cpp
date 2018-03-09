@@ -134,6 +134,20 @@ int Mainloop::write_msg(Endpoint *e, const struct buffer *buf)
 void Mainloop::route_msg(struct buffer *buf, int target_sysid, int target_compid, int sender_sysid,
                          int sender_compid)
 {
+    if(blacklist_set != nullptr) {
+        std::set<unsigned int>::iterator it = blacklist_set->find(target_sysid);
+        if(it != blacklist_set->end()) {
+            log_info("Dropping messages to SYS_ID: %d", target_sysid);
+            return;
+        }
+
+        it = blacklist_set->find(target_sysid);
+        if(it != blacklist_set->end()) {
+            log_info("Dropping message from SYS_ID: %d", sender_sysid);
+            return;
+        }
+    }
+  
     bool unknown = true;
 
     for (Endpoint **e = g_endpoints; *e != nullptr; e++) {
@@ -344,6 +358,12 @@ static bool _print_statistics_timeout_cb(void *data)
     Mainloop *mainloop = static_cast<Mainloop *>(data);
     mainloop->print_statistics();
     return true;
+}
+
+void Mainloop::add_blacklist(std::vector<unsigned long>* sysids) {
+
+    //convert vector to set
+    blacklist_set = new std::set<unsigned int>(sysids->begin(), sysids->end());
 }
 
 bool Mainloop::add_endpoints(Mainloop &mainloop, struct options *opt)

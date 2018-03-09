@@ -22,6 +22,7 @@
 #include "endpoint.h"
 #include "timeout.h"
 #include "ulog.h"
+#include <set>
 
 struct endpoint_entry {
     struct endpoint_entry *next;
@@ -47,6 +48,7 @@ public:
 
     void free_endpoints(struct options *opt);
     bool add_endpoints(Mainloop &mainloop, struct options *opt);
+    void add_blacklist(std::vector<unsigned long>* ids);
 
     void print_statistics();
 
@@ -77,6 +79,8 @@ private:
     LogEndpoint *_log_endpoint = nullptr;
 
     Timeout *_timeouts = nullptr;
+
+    std::set<unsigned int>* blacklist_set = nullptr;
 
     struct {
         uint32_t msg_to_unknown = 0;
@@ -126,6 +130,7 @@ struct options {
     unsigned long tcp_port;
     bool report_msg_statistics;
     char *logs_dir;
+    std::vector<unsigned long>* blacklist_sys_ids;
     int debug_log_level;
     enum mavlink_dialect mavlink_dialect;
 };

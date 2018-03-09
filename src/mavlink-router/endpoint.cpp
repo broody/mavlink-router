@@ -70,20 +70,21 @@ int Endpoint::handle_read()
 {
     int target_sysid, target_compid, r;
     uint8_t src_sysid, src_compid;
+    uint32_t msg_id;
     struct buffer buf{};
 
-    while ((r = read_msg(&buf, &target_sysid, &target_compid, &src_sysid, &src_compid)) > 0)
+    while ((r = read_msg(&buf, &target_sysid, &target_compid, &src_sysid, &src_compid, &msg_id)) > 0) 
         Mainloop::get_instance().route_msg(&buf, target_sysid, target_compid, src_sysid,
                                            src_compid);
+    
 
     return r;
 }
 
 int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compid,
-                       uint8_t *src_sysid, uint8_t *src_compid)
+                       uint8_t *src_sysid, uint8_t *src_compid, uint32_t *msg_id)
 {
     bool should_read_more = true;
-    uint32_t msg_id;
     const mavlink_msg_entry_t *msg_entry;
     uint8_t *payload, seq, payload_len;
 
@@ -171,7 +172,7 @@ int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compi
         if (rx_buf.len < sizeof(*hdr))
             return 0;
 
-        msg_id = hdr->msgid;
+        *msg_id = hdr->msgid;
         payload = rx_buf.data + sizeof(*hdr);
         seq = hdr->seq;
         *src_sysid = hdr->sysid;
@@ -190,7 +191,7 @@ int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compi
         if (rx_buf.len < sizeof(*hdr))
             return 0;
 
-        msg_id = hdr->msgid;
+        *msg_id = hdr->msgid;
         payload = rx_buf.data + sizeof(*hdr);
         seq = hdr->seq;
         *src_sysid = hdr->sysid;
@@ -212,7 +213,7 @@ int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compi
     _last_packet_len = expected_size;
     _stat.read.total++;
 
-    msg_entry = mavlink_get_msg_entry(msg_id);
+    msg_entry = mavlink_get_msg_entry(*msg_id);
     if (_crc_check_enabled && msg_entry) {
         /*
          * It is accepting and forwarding unknown messages ids because
@@ -238,7 +239,7 @@ int Endpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compi
     *target_compid = -1;
 
     if (msg_entry == nullptr) {
-        log_debug("No message entry for %u", msg_id);
+        log_debug("No message entry for %u", *msg_id);
     } else {
         if (msg_entry->flags & MAV_MSG_ENTRY_FLAG_HAVE_TARGET_SYSTEM) {
             // if target_system is 0, it may have been trimmed out on mavlink2
@@ -571,9 +572,9 @@ bool UartEndpoint::_change_baud_cb(void *data)
 }
 
 int UartEndpoint::read_msg(struct buffer *pbuf, int *target_sysid, int *target_compid,
-                           uint8_t *src_sysid, uint8_t *src_compid)
+                           uint8_t *src_sysid, uint8_t *src_compid, uint32_t *msg_id)
 {
-    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid);
+    int ret = Endpoint::read_msg(pbuf, target_sysid, target_compid, src_sysid, src_compid, msg_id);
 
     if (_change_baud_timeout != nullptr && ret == ReadOk) {
         log_info("Baudrate %lu responded, keeping it", _baudrates[_current_baud_idx]);

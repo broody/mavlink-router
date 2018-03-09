@@ -37,6 +37,11 @@
 #       most verbose.
 #       Default:<info>
 #
+#   BlacklistSysIds
+#       Numeric value of mavlink system IDs that will be filtered 
+#       out (not routed). IDs delimited by ',' 
+#       Example: 10,20
+#
 # Section [UartEndpoint]: This section must have a name
 #
 # Keys:

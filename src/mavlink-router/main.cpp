@@ -46,6 +46,7 @@ static struct options opt = {
         .tcp_port = ULONG_MAX,
         .report_msg_statistics = false,
         .logs_dir = nullptr,
+        .blacklist_sys_ids = nullptr,
         .debug_log_level = (int)Log::Level::INFO,
         .mavlink_dialect = Auto
 };
@@ -57,6 +58,7 @@ static const struct option long_options[] = {
     { "report_msg_statistics",  no_argument,        NULL,   'r' },
     { "tcp-port",               required_argument,  NULL,   't' },
     { "tcp-endpoint",           required_argument,  NULL,   'p' },
+    { "blacklist-msg-id",       no_argument,        NULL,   'b' },
     { "log",                    required_argument,  NULL,   'l' },
     { "debug-log-level",        required_argument,  NULL,   'g' },
     { "verbose",                no_argument,        NULL,   'v' },
@@ -64,7 +66,7 @@ static const struct option long_options[] = {
     { }
 };
 
-static const char* short_options = "he:rt:c:d:l:p:g:vV";
+static const char* short_options = "he:rt:c:d:b:l:p:g:vV";
 
 static void help(FILE *fp) {
     fprintf(fp,
@@ -84,6 +86,7 @@ static void help(FILE *fp) {
             "  -c --conf-file <file>        .conf file with configurations for mavlink-router.\n"
             "  -d --conf-dir <dir>          Directory where to look for .conf files overriding\n"
             "                               default conf file.\n"
+            "  -b --blacklist-sys-id <id>   Filters out messages with this sysid from being routed\n"
             "  -l --log <directory>         Enable Flight Stack logging\n"
             "  -g --debug-log-level <level> Set debug log level. Levels are\n"
             "                               <error|warning|info|debug>\n"
@@ -386,6 +389,9 @@ static int parse_argv(int argc, char *argv[])
     assert(argc >= 0);
     assert(argv);
 
+    if(opt.blacklist_sys_ids == nullptr) 
+        opt.blacklist_sys_ids = new std::vector<unsigned long>();
+
     while ((c = getopt_long(argc, argv, short_options, long_options, NULL)) >= 0) {
         switch (c) {
         case 'h':
@@ -433,6 +439,17 @@ static int parse_argv(int argc, char *argv[])
         }
         case 'v': {
             opt.debug_log_level = (int)Log::Level::DEBUG;
+            break;
+        }
+        case 'b' : {
+            unsigned long id;
+            if (safe_atoul(optarg, &id) < 0) {
+                log_error("Invalid blacklist-msg-id argument: %s", optarg);
+                return -EINVAL;
+            }
+
+            opt.blacklist_sys_ids->push_back(id); 
+            log_info("Added %s to mavlink msg_id blacklist", optarg);
             break;
         }
         case 'p': {
@@ -606,6 +623,24 @@ static int parse_mode(const char *val, size_t val_len, void *storage, size_t sto
     return 0;
 }
 
+static int parse_blacklist(const char *val, size_t val_len, void *storage, size_t storage_len) {
+    assert(val);
+    assert(storage);
+    assert(val_len);
+
+    const char *sys_ids = strndupa(val, val_len);
+
+    opt.blacklist_sys_ids = strlist_to_ul(sys_ids, "sys_ids", ",", -1);
+
+    if(opt.blacklist_sys_ids == nullptr) {
+        return -EINVAL;
+    }
+
+    log_info("Added %s sys_id to blacklist", sys_ids);
+
+    return 0;
+}
+
 static int parse_confs(ConfFile &conf)
 {
     int ret;
@@ -619,6 +654,7 @@ static int parse_confs(ConfFile &conf)
         {"MavlinkDialect",  false, parse_mavlink_dialect,   OPTIONS_TABLE_STRUCT_FIELD(options, mavlink_dialect)},
         {"Log",             false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, logs_dir)},
         {"DebugLogLevel",   false, parse_log_level,         OPTIONS_TABLE_STRUCT_FIELD(options, debug_log_level)},
+        {"BlacklistMsgIds", false, parse_blacklist,         },
     };
 
     struct option_uart {
@@ -821,6 +857,9 @@ int main(int argc, char *argv[])
 
     if (!mainloop.add_endpoints(mainloop, &opt))
         goto endpoint_error;
+
+    if(opt.blacklist_sys_ids->size() > 0)
+        mainloop.add_blacklist(opt.blacklist_sys_ids); 
 
     mainloop.loop();
 
