@@ -135,17 +135,21 @@ void Mainloop::route_msg(struct buffer *buf, int target_sysid, int target_compid
                          int sender_compid)
 {
     if(blacklist_set != nullptr) {
+
+	if(blacklist_set->count(sender_sysid) || blacklist_set->count(target_sysid)) {
+            log_info("Dropping message to/from SYS_ID: %d", sender_sysid);
+	    return;
+	}
+	/*std::set<unsigned int>::iterator it2 = blacklist_set->find(sender_sysid);
+        if(it2 != blacklist_set->end()) {
+            return;
+        }
+
         std::set<unsigned int>::iterator it = blacklist_set->find(target_sysid);
         if(it != blacklist_set->end()) {
             log_info("Dropping messages to SYS_ID: %d", target_sysid);
             return;
-        }
-
-        it = blacklist_set->find(target_sysid);
-        if(it != blacklist_set->end()) {
-            log_info("Dropping message from SYS_ID: %d", sender_sysid);
-            return;
-        }
+        }*/
     }
   
     bool unknown = true;

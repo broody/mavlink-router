@@ -654,7 +654,7 @@ static int parse_confs(ConfFile &conf)
         {"MavlinkDialect",  false, parse_mavlink_dialect,   OPTIONS_TABLE_STRUCT_FIELD(options, mavlink_dialect)},
         {"Log",             false, ConfFile::parse_str_dup, OPTIONS_TABLE_STRUCT_FIELD(options, logs_dir)},
         {"DebugLogLevel",   false, parse_log_level,         OPTIONS_TABLE_STRUCT_FIELD(options, debug_log_level)},
-        {"BlacklistMsgIds", false, parse_blacklist,         },
+        {"BlacklistSysIds", false, parse_blacklist,         },
     };
 
     struct option_uart {
