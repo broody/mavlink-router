@@ -137,7 +137,7 @@ void Mainloop::route_msg(struct buffer *buf, int target_sysid, int target_compid
     if(blacklist_set != nullptr) {
 
 	if(blacklist_set->count(sender_sysid) || blacklist_set->count(target_sysid)) {
-            log_info("Dropping message to/from SYS_ID: %d", sender_sysid);
+            log_debug("Dropping message to/from SYS_ID: %d", sender_sysid);
 	    return;
 	}
 	/*std::set<unsigned int>::iterator it2 = blacklist_set->find(sender_sysid);
